@@ -11,7 +11,7 @@ This guide explains how to run the Nextflow Chatbot application using Docker.
 
 1. **Clone and navigate to the project directory**
    ```bash
-   cd /path/to/Seqera_App
+   cd /path/to/folder
    ```
 
 2. **Set up environment variables**

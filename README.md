@@ -54,7 +54,7 @@ uvicorn app.main:app --reload --port 8000
 
 The backend API will be available at `http://localhost:8000`.
 
-For more detailed deployment instructions including Docker setup, see [Docker.md](Docker.md).
+These instructions assume that the environment variables have already been populated. For more detailed deployment instructions including Docker setup, see [DOCKER.md](DOCKER.md).
 
 ## Dummy Deployment
 
