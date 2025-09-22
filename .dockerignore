@@ -1,0 +1,33 @@
+# Git
+.git/
+.gitignore
+
+# Documentation
+README.md
+*.md
+
+# Environment files
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node modules (handled in individual Dockerfiles)
+node_modules/
+
+# Python cache (handled in individual Dockerfiles)
+__pycache__/
+
+# Build outputs
+dist/
+build/
+out/
+
+# Logs
+*.log
