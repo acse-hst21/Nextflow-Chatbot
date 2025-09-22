@@ -4,7 +4,7 @@
 import React, { useEffect, useState } from "react";
 import MessageBubble from "./MessageBubble";
 
-const BACKEND_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+const BACKEND_BASE = process.env.NEXT_PUBLIC_BACKEND_URL;
 
 interface Citation {
   id: string;
