@@ -44,7 +44,7 @@ app.add_middleware(
         "http://localhost:3000",     # Local development
         "http://127.0.0.1:3000",     # Alternative localhost
         "http://0.0.0.0:3000",       # Docker frontend
-        "https://nextflow-chatbot.vercel.app/" # Deployed front end
+        "https://nextflow-chatbot.vercel.app" # Deployed front end
     ],
     allow_credentials=True,
     allow_methods=["*"],
