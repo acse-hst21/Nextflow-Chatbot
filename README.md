@@ -61,4 +61,4 @@ These instructions assume that the environment variables have already been popul
 The backend of this application has been deployed using [Railway](https://railway.com/).
 The frontend of this application has been deployed using [Vercel](https://vercel.com)
 
-To access a live demo of this application, please click this link [here](https://nextflow-chatbot.vercel.app/)
+To access a live demo of this application, please click this link [here](https://nextflow-chatbot.vercel.app/).
