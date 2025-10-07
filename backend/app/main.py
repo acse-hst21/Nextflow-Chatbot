@@ -4,15 +4,19 @@ import json
 import uuid
 import asyncio
 from typing import Dict, Any, List
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import numpy as np
 from openai import OpenAI
-from .utils import DOCUMENTS, top_k_by_embedding, simple_overlap_rank, safe_parse_metadata_from_text
 from datetime import datetime
 from llm_guard.input_scanners import PromptInjection
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+
+from .rag_service import initialize_rag_service, get_rag_service
+from .utils import safe_parse_metadata_from_text
 
 load_dotenv()
 
@@ -56,27 +60,54 @@ SESSIONS: Dict[str, List[Dict[str, str]]] = {}
 # Initialize prompt injection scanner
 prompt_injection_scanner = PromptInjection()
 
+# Initialize RAG service and scheduler
+rag_service = None
+scheduler = AsyncIOScheduler()
+
 def _now():
     return datetime.utcnow().isoformat()
 
-# Compute embeddings for DOCUMENTS at startup if an API key exists
+async def weekly_update_task():
+    """Background task to update vector store weekly."""
+    global rag_service
+    if rag_service and not MOCK_MODE:
+        try:
+            print(f"[{_now()}] Starting scheduled weekly vector store update")
+            await rag_service.update_vector_store(force_update=False)
+        except Exception as e:
+            print(f"[{_now()}] Error in scheduled update: {e}")
+
 @app.on_event("startup")
-def prepare_documents():
+async def startup_event():
+    global rag_service, scheduler
+
     print(f"[{_now()}] Starting up - MOCK_MODE: {MOCK_MODE}")
-    if MOCK_MODE:
-        print(f"[{_now()}] MOCK_MODE: skipping embeddings")
-        return
-    try:
-        for d in DOCUMENTS:
-            resp = client.embeddings.create(input=d["text"], model=EMBEDDING_MODEL)
-            emb = np.array(resp.data[0].embedding, dtype=float)
-            if np.linalg.norm(emb) > 0:
-                emb = emb / np.linalg.norm(emb)
-            d["embedding"] = emb
-        print(f"[{_now()}] Computed embeddings for DOCUMENTS")
-    except Exception as e:
-        # If something fails, we still run but without embeddings (fallback to simple overlap)
-        print(f"[{_now()}] Warning: failed to compute embeddings at startup: {e}")
+
+    if not MOCK_MODE and has_valid_api_key():
+        try:
+            # Initialize RAG service
+            rag_service = initialize_rag_service(OPENAI_API_KEY)
+
+            # Check if initial setup is needed
+            if not rag_service.vector_store or rag_service.is_update_needed():
+                print(f"[{_now()}] Performing initial vector store setup...")
+                await rag_service.update_vector_store(force_update=True)
+
+            # Start weekly update scheduler
+            scheduler.add_job(
+                weekly_update_task,
+                CronTrigger(day_of_week=0, hour=2, minute=0),  # Every Sunday at 2 AM
+                id='weekly_update',
+                replace_existing=True
+            )
+            scheduler.start()
+            print(f"[{_now()}] Scheduled weekly vector store updates")
+
+        except Exception as e:
+            print(f"[{_now()}] Warning: failed to initialize RAG service: {e}")
+            print(f"[{_now()}] Falling back to MOCK_MODE")
+    else:
+        print(f"[{_now()}] MOCK_MODE: skipping RAG service initialization")
 
     # Run smoke test
     try:
@@ -85,17 +116,31 @@ def prepare_documents():
     except ImportError:
         print(f"[{_now()}] Warning: smoke test not available")
 
+@app.on_event("shutdown")
+async def shutdown_event():
+    global scheduler
+    if scheduler.running:
+        scheduler.shutdown()
+
 @app.get("/api/status")
 def get_status():
+    global rag_service
     key_info = "NOT SET"
     if OPENAI_API_KEY:
         key_info = f"SET (length: {len(OPENAI_API_KEY)}, starts with: {OPENAI_API_KEY[:10] if len(OPENAI_API_KEY) >= 10 else OPENAI_API_KEY}...)"
 
     print(f"[{_now()}] Status check: MOCK_MODE={MOCK_MODE}, OPENAI_API_KEY={key_info}")
+
     status = {
         "mock_mode": MOCK_MODE,
-        "message": "Running in Mock Mode - responses will echo your input" if MOCK_MODE else "Running with OpenAI integration"
+        "message": "Running in Mock Mode - responses will echo your input" if MOCK_MODE else "Running with LangChain RAG system",
+        "rag_service_initialized": rag_service is not None
     }
+
+    # Add RAG service info if available
+    if rag_service:
+        status["rag_info"] = rag_service.get_vector_store_info()
+
     print(f"[{_now()}] Returning status: {status}")
     return status
 
@@ -104,6 +149,39 @@ def create_session():
     sid = str(uuid.uuid4())
     SESSIONS[sid] = []
     return {"session_id": sid}
+
+@app.post("/api/reindex")
+async def trigger_reindex(background_tasks: BackgroundTasks):
+    """Trigger manual re-indexing of the vector store."""
+    global rag_service
+
+    if MOCK_MODE:
+        return JSONResponse(
+            {"error": "Re-indexing not available in mock mode"},
+            status_code=400
+        )
+
+    if not rag_service:
+        return JSONResponse(
+            {"error": "RAG service not initialized"},
+            status_code=500
+        )
+
+    async def reindex_task():
+        try:
+            print(f"[{_now()}] Starting manual re-indexing...")
+            await rag_service.update_vector_store(force_update=True)
+            print(f"[{_now()}] Manual re-indexing completed")
+        except Exception as e:
+            print(f"[{_now()}] Error during manual re-indexing: {e}")
+
+    background_tasks.add_task(reindex_task)
+
+    return {
+        "message": "Re-indexing started in background",
+        "status": "started",
+        "timestamp": _now()
+    }
 
 def build_system_prompt(top_docs: List[Dict[str, Any]]) -> str:
     sources_text = "\n\n".join([f"[{d.get('title','')}]({d.get('url')})\n{d.get('text')}" for d in top_docs])
@@ -174,20 +252,23 @@ async def chat_stream(request: Request):
 
         return StreamingResponse(mock_event_gen(), media_type="text/event-stream")
 
-    # Retrieve relevant documents using RAG
+    # Retrieve relevant documents using RAG service
     try:
-        qemb_resp = client.embeddings.create(input=user_message, model=EMBEDDING_MODEL)
-        qvec = np.array(qemb_resp.data[0].embedding, dtype=float)
-        if np.linalg.norm(qvec) > 0:
-            qvec = qvec / np.linalg.norm(qvec)
-        # use top_k_by_embedding only if docs have embeddings
-        if any("embedding" in d for d in DOCUMENTS):
-            top_docs = top_k_by_embedding(qvec, DOCUMENTS, k=TOP_K, threshold=SIMILARITY_THRESHOLD)
+        if rag_service and rag_service.vector_store:
+            top_docs = rag_service.search_documents(
+                query=user_message,
+                k=TOP_K,
+                score_threshold=SIMILARITY_THRESHOLD
+            )
         else:
-            # For word overlap, use a minimum of 1 overlapping word as threshold
+            print(f"[backend] Warning: RAG service not available, using fallback", flush=True)
+            # Fallback to original documents with simple overlap
+            from .utils import DOCUMENTS, simple_overlap_rank
             top_docs = simple_overlap_rank(user_message, DOCUMENTS, k=TOP_K, threshold=1)
     except Exception as e:
-        print(f"[backend] Warning: query embedding failed, falling back to overlap rank: {e}", flush=True)
+        print(f"[backend] Warning: RAG search failed, using fallback: {e}", flush=True)
+        # Fallback to original documents
+        from .utils import DOCUMENTS, simple_overlap_rank
         top_docs = simple_overlap_rank(user_message, DOCUMENTS, k=TOP_K, threshold=1)
 
     print(f"[backend] Retrieved {len(top_docs)} documents for query (threshold: {SIMILARITY_THRESHOLD})", flush=True)

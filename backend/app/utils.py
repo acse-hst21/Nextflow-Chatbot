@@ -4,8 +4,8 @@ import re
 from typing import List, Dict, Any
 import numpy as np
 
-# In reality, the variables/functions in this file would be replaced by a proper RAG
-# pipeline (i.e., using Langchain)
+# Legacy documents for fallback compatibility
+# The main RAG system now uses LangChain with live Nextflow documentation
 DOCUMENTS = [
     {
         "text": "The latest version of Nextflow is version 25.04.7",
